@@ -1,0 +1,14 @@
+#!/usr/bin/env perl
+
+use FindBin qw/$Bin/;
+use lib "$Bin/../lib";
+
+use BB4;
+
+use strict;
+use warnings;
+
+
+BB4->new( 
+	config_directory => "$Bin/../etc",
+)->start;
