@@ -1,0 +1,20 @@
+#!/usr/bin/perl
+
+use strict;
+
+my $quote_dir = "/home/buu/bb/quotes";
+
+unless( -d $quote_dir ) {
+	die "Failed to find quotedir!\n";
+}
+
+unless( -r "$quote_dir/$ARGV[0]" ) {
+	die "Bad quote file\n";
+}
+
+open my $fh, "<", "$quote_dir/$ARGV[0]" or die "Failed to open $ARGV[0]: $!\n";
+my @lines = <$fh>;
+close $fh;
+
+print $lines[ rand @lines ];
+

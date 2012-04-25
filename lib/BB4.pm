@@ -6,6 +6,7 @@ use warnings;
 use POE;
 
 use BB4::ConfigParser;
+use BB4::PluginHandler;
 
 sub new {
 	my( $class, %config ) = @_;
@@ -20,6 +21,9 @@ sub new {
 	return $self;
 }
 
+########################################################
+# Private methods
+########################################################
 sub _parse_config {
 	my( $self, $conf ) = @_;
 	
@@ -47,10 +51,16 @@ sub _load_config {
 			push @{ $self->{config}->{irc} }, $conf->{irc};
 		}
 	}
+
+	return 1;
 }
 
 sub _load_plugin_handler {
 	my( $self ) = @_;
+	
+	$self->{plugin_handler} = BB4::PluginHandler->new( $self );
+
+	return 1;
 }
 
 sub _load_connectors {
@@ -72,10 +82,28 @@ sub _load_connectors {
 			if( $@ ) { warn "Warning: Failed to instantiate $package_name\n"; }
 		}
 	}
+
+	return 1;
 }
 
+########################################################
+# Public methods
+########################################################
 sub start {
 	POE::Kernel->run;
 }
+
+########################################################
+# "Protected" Methods
+########################################################
+
+sub handle_command {
+	my( $self, $command, $tag ) = @_;
+
+	$self->{plugin_handler}->yield( handle_command => $command, $tag );
+
+	return;
+}
+
 
 1;
