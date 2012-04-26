@@ -8,7 +8,9 @@ use POE::Filter::Line;
 use POE::Wheel::Run;
 
 use Regexp::Common;
+use JSON;
 use UUID;
+use Data::Dumper;
 
 use strict;
 use warnings;
@@ -37,6 +39,7 @@ sub new {
 				client_accept
 				client_error
 				client_input
+				handle_client_input
 			/ ]
 		]
 	);
@@ -150,32 +153,47 @@ sub invoke_target {
 
 			if( -x $_ ) {
 				$exe = $_;
-				$flag = 1;
+				last;
+			}
+		}
+	}
+
+	if( -x $exe ) {
+		$self->_launch_wheel_run( [ $exe, @$args], $cmd_struct, $kernel );
+	}
+	else {
+		my $service;
+		for( values %{ $self->{services} } ) {
+			if( $_->{command_name} eq $target ) {
+				$service = $_;
 				last;
 			}
 		}
 
-		unless( $flag ) {
-			$cmd_struct->{stderr} .= "Failed to find executable for $target";
-			$kernel->yield( execute_commands => $cmd_struct->{cmd_id} );
+		if( $service ) {
+			warn "Found service: $service\n";
+			$self->_invoke_service( $service, $target, $args, $cmd_id );
+		}
+		else {
+			$cmd_struct->{stderr} .= "Couldn't find a match for [$target]";
+			$kernel->yield( wheel_command_output => $cmd_id );
 			return;
 		}
-	}
-
-	if( $exe ) {
-		$self->_launch_wheel_run( [ $exe, @$args], $cmd_struct, $kernel );
-	}
-	else {
-		$self->_invoke_service( $exe, $args, $cmd_struct, $kernel );
 	}
 
 	return;
 }
 
 sub _invoke_service {
-	my( $self, $target, $args, $cmd_struct, $kernel ) = @_;
+	my( $self, $service, $target, $args, $cmd_id ) = @_;
+	my $wheel = $self->{server_wheels}->{ $service->{wheel_id} };
+	if( not ref $args ) { $args = [$args] }
 
-
+	warn "Invoking service: $target\n";
+	
+	if( $wheel ) {
+		$wheel->put( JSON->new->utf8->encode( { command => $target, args => $args, cmd_id => $cmd_id } ) );
+	}
 }
 
 sub wheel_command_output {
@@ -316,16 +334,84 @@ sub client_error {
 	my( $self, $wheel_id ) = @_[OBJECT, ARG3];
 
 	delete $self->{server_wheels}->{ $wheel_id };
+	delete $self->{services}->{ $wheel_id };
 
 	return;
 }
 
 sub client_input {
-	my( $self, $input, $wheel_id ) = @_[OBJECT, ARG0, ARG1];
+	my( $self, $kernel, $input, $wheel_id ) = @_[OBJECT, KERNEL, ARG0, ARG1];
+	my $wheel = $self->{server_wheels}->{ $wheel_id };
 
-	$self->{server_wheels}->{ $wheel_id}->put("I see: [$input]");
+	my $json = JSON->new->utf8->max_size(1024);
+
+	my $rec = eval { $json->decode( $input ) };
+	if( $@ ) {
+		warn "bad json: $input\n";
+		$self->warn_client( $wheel_id, "Bad JSON: $@" );
+		return;
+	}
+
+	$kernel->yield( handle_client_input => $rec, $wheel_id );
 
 	return;
+}
+
+sub handle_client_input {
+	my( $self, $kernel, $input, $wheel_id ) = @_[OBJECT, KERNEL, ARG0, ARG1];
+	my $wheel = $self->{server_wheels}->{ $wheel_id };
+	my $json = JSON->new->utf8;
+
+	warn "Handling Input: ", Dumper( $input );
+
+	if( not ref $input or not length $input->{type} ) {
+		$self->warn_client( $wheel_id, "Bad command! [$input]" );
+		return;
+	}
+
+	if( $input->{type} eq 'REGISTER' ) {
+	#TODO Handle duplicate command_names!
+
+		my $service = { wheel_id => $wheel_id };
+
+		if( length $input->{command_name} ) {
+			$service->{command_name} = $input->{command_name};
+		}
+
+		if( ref $input->{events} eq 'ARRAY' ) {
+			for( @{ $input->{events} } ) {
+				my( $connector, $event ) = split /-/, $_, 2;
+				$service->{events}->{lc $connector}->{lc $event} = 1;
+			}
+		}
+
+		$self->{services}->{ $wheel_id } = $service;
+
+		$wheel->put( $json->encode( { response => "OK" } ) );
+	}
+
+	elsif( $input->{type} eq 'RESPONSE' ) {
+		my $cmd_struct = $self->{open_commands}->{ $input->{cmd_id } };
+		if( not $cmd_struct ) {
+			$self->warn_client( $wheel_id, "Invalid cmd_id" );
+			return;
+		}
+
+		warn "Got a response: $input->{body}\n";
+
+		$cmd_struct->{stdout} .= $input->{body};
+
+		$kernel->yield( execute_commands => $input->{cmd_id} );
+	}
+}
+
+sub warn_client {
+	my( $self, $wheel_id, @msg );
+	my $wheel = $self->{server_wheels}->{ $wheel_id };
+
+	if( $wheel ) {
+		$wheel->put( JSON->new->utf8->encode( { response => "ERROR", body => "@msg" } ) );
+	}
 }
 
 1;
