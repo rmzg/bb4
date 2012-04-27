@@ -77,13 +77,13 @@ sub _start {
 sub command_response {
 	my( $self, $heap, $response, $said ) = @_[OBJECT, HEAP, ARG0, ARG1];
 
-	if( $said->{public} ) {
-		$response = "$said->{nick}: $response";
+	if( length $response ) {
+		if( $said->{public} ) {
+			$response = "$said->{nick}: $response";
+		}
+
+		$heap->{irc}->yield( privmsg => $said->{channel} => $response );
 	}
-
-	warn "Attempting to privmsg $said->{channel} => $response\n";
-
-	$heap->{irc}->yield( privmsg => $said->{channel} => $response );
 }
 
 sub irc_001 {
@@ -105,6 +105,7 @@ sub _said {
 	@{$said}{qw/nick user host/} = parse_user( $irc_user );
 	$said->{channel} = $channels->[0];
 	$said->{body} = $text;
+	$said->{raw_body} = $text;
 
 	$said->{self_nick} = $heap->{irc}->nick_name;
 	if( $said->{body} =~ s/^\s*$said->{self_nick}\s*[,:-]?\s*// ) {
@@ -123,14 +124,26 @@ sub _said {
 	return $said;
 }
 
+sub _dispatch_event {
+	my( $self, $said ) = @_;
+	(caller 1)[3] =~ /::([^:]+)$/;
+	my $caller = $1;
+	$caller =~ s/^irc_//;
+
+	$self->{bb4}->handle_event({ event_type => "irc", event_name => $caller, %$said });
+	return;
+}
+
 sub irc_public {
 	my( $self ) = $_[OBJECT];
 
 	my $said = _said( @_ );
+	$self->_dispatch_event( $said );
 
 	if( $said->{body} =~ s/^\s*!\s*// or $said->{addressed} ) {
 		$self->{bb4}->handle_command( $said->{body}, $said );
 	}
+
 
 
 	return;
@@ -139,12 +152,17 @@ sub irc_msg {
 	my( $self ) = $_[OBJECT];
 
 	my $said = _said( @_ );
+	$self->_dispatch_event( $said );
+
 
 	$said->{body} =~ s/^\s*!\s*//;
 
 	$self->{bb4}->handle_command( $said->{body}, $said );
+
 } 
 sub irc_notice {} 
-sub _default {}
+sub _default {
+	my( $self, $event, @args ) = @_[OBJECT, ARG0..$#_];
+}
 
 1;

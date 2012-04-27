@@ -25,6 +25,8 @@ sub new {
 			$self => [ qw/
 				_start
 
+				handle_event
+
 				handle_command
 				execute_commands
 				invoke_target
@@ -64,11 +66,44 @@ sub _start {
 		SuccessEvent => "client_accept",
 		FailureEvent => "server_error",
 	);
+
+	my @children;
+	for( glob "services/*" ) {
+		my $pid = fork;
+		if( $pid ) {
+			push @children, $pid;
+		}
+		elsif( not defined $pid ) {
+			warn "Failed to fork, this is very bad [$!]\n";
+		}
+		else {
+			exec( $_ ) or do {
+			POE::Kernel->stop;
+				warn "Failed to exec [$_]: $!\n";
+				exit;
+			}
+		}
+	}
 }
 
 ##########################################################
-# The main remote entry point
+# The main remote entry points
 ##########################################################
+sub handle_event {
+	my( $self, $kernel, $event ) = @_[OBJECT, KERNEL, ARG0];
+
+	for my $service ( values %{ $self->{services} } ) {
+		if( $service->{events}->{ $event->{event_type} }->{ $event->{event_name} } ) {
+			my $wheel = $self->{server_wheels}->{ $service->{wheel_id} }
+				or next;
+
+			$event->{type} = "event";
+
+			$wheel->put( JSON->new->utf8->encode($event) );
+		}
+	}
+}
+
 sub handle_command {
 	my( $self, $kernel, $sender, $command_line, $tag ) = @_[OBJECT, KERNEL, SENDER, ARG0, ARG1];
 	
@@ -90,15 +125,18 @@ sub handle_command {
 	return;
 }
 
+##########################################################
+# Scary internal event handling
+##########################################################
 sub execute_commands {
 	my( $self, $kernel, $cmd_id ) = @_[OBJECT, KERNEL, ARG0];
 	my $cmd_struct = $self->{open_commands}->{ $cmd_id };
 
 	my $command_line = $cmd_struct->{current_command_line};
 
-	warn "execute_commands: [$command_line]\n";
-
 	my $EOC = qr/[;|&]/;
+	my $BAREWORD = qr{[\w~!\@\#\$\%^*+=,.?\\/:-]};
+	
 
 	if( $command_line !~ /\S/ ) { #Empty command_line
 
@@ -112,7 +150,7 @@ sub execute_commands {
 	}
 
 	my @args;
-	while( $command_line =~ s/^\s*(\w+|$RE{quoted})// ) {
+	while( $command_line =~ s/^\s*($BAREWORD+|$RE{quoted})// ) {
 
 		push @args, $1;
 
@@ -171,7 +209,6 @@ sub invoke_target {
 		}
 
 		if( $service ) {
-			warn "Found service: $service\n";
 			$self->_invoke_service( $service, $target, $args, $cmd_id );
 		}
 		else {
@@ -189,10 +226,8 @@ sub _invoke_service {
 	my $wheel = $self->{server_wheels}->{ $service->{wheel_id} };
 	if( not ref $args ) { $args = [$args] }
 
-	warn "Invoking service: $target\n";
-	
 	if( $wheel ) {
-		$wheel->put( JSON->new->utf8->encode( { command => $target, args => $args, cmd_id => $cmd_id } ) );
+		$wheel->put( JSON->new->utf8->encode( { type => 'command', command => $target, args => $args, cmd_id => $cmd_id } ) );
 	}
 }
 
@@ -347,7 +382,6 @@ sub client_input {
 
 	my $rec = eval { $json->decode( $input ) };
 	if( $@ ) {
-		warn "bad json: $input\n";
 		$self->warn_client( $wheel_id, "Bad JSON: $@" );
 		return;
 	}
@@ -361,8 +395,6 @@ sub handle_client_input {
 	my( $self, $kernel, $input, $wheel_id ) = @_[OBJECT, KERNEL, ARG0, ARG1];
 	my $wheel = $self->{server_wheels}->{ $wheel_id };
 	my $json = JSON->new->utf8;
-
-	warn "Handling Input: ", Dumper( $input );
 
 	if( not ref $input or not length $input->{type} ) {
 		$self->warn_client( $wheel_id, "Bad command! [$input]" );
@@ -387,7 +419,7 @@ sub handle_client_input {
 
 		$self->{services}->{ $wheel_id } = $service;
 
-		$wheel->put( $json->encode( { response => "OK" } ) );
+		$wheel->put( $json->encode( { type => 'response', response => "OK" } ) );
 	}
 
 	elsif( $input->{type} eq 'RESPONSE' ) {
@@ -397,9 +429,9 @@ sub handle_client_input {
 			return;
 		}
 
-		warn "Got a response: $input->{body}\n";
-
-		$cmd_struct->{stdout} .= $input->{body};
+		if( defined $input->{body} ) {
+			$cmd_struct->{stdout} .= $input->{body};
+		}
 
 		$kernel->yield( execute_commands => $input->{cmd_id} );
 	}
@@ -410,7 +442,7 @@ sub warn_client {
 	my $wheel = $self->{server_wheels}->{ $wheel_id };
 
 	if( $wheel ) {
-		$wheel->put( JSON->new->utf8->encode( { response => "ERROR", body => "@msg" } ) );
+		$wheel->put( JSON->new->utf8->encode( { type => 'response', response => "ERROR", body => "@msg" } ) );
 	}
 }
 

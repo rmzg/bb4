@@ -105,5 +105,13 @@ sub handle_command {
 	return;
 }
 
+sub handle_event {
+	my( $self, $event ) = @_;
+
+	$self->{plugin_handler}->yield( handle_event => $event );
+
+	return;
+}
+
 
 1;

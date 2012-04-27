@@ -1,0 +1,16 @@
+#!/usr/bin/perl
+
+use strict;
+
+my $substitution = shift;
+$substitution =~ m{^\s*s/([^/]+)/([^/]+)(?:/(\w*))?}
+	or die "Failed to parse [$substitution]\n";
+
+my( $search, $replace, $flags ) = ($1,$2,$3);
+
+
+for( @ARGV ) {
+	s/$search/$replace/;
+}
+
+print "@ARGV\n"
